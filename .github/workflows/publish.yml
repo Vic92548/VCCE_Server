@@ -26,14 +26,11 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Set unique package version
-        run: >-
-          node -e "const fs = require('fs');
-          const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-          const base = pkg.version.split('-')[0];
-          const run=process.env.GITHUB_RUN_NUMBER;
-          pkg.version=`${base}-${run}`;
-          fs.writeFileSync('package.json', JSON.stringify(pkg,null,2));
-          console.log('Version set to', pkg.version);"
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('-')[0]")
+          NEW_VERSION="${BASE}-${GITHUB_RUN_NUMBER}"
+          echo "Setting version to $NEW_VERSION"
+          npm version "$NEW_VERSION" --no-git-tag-version
 
       - name: Publish to npm
         run: npm publish --access public
