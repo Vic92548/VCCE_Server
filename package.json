@@ -1,0 +1,14 @@
+{
+  "name": "bpp-fs-server",
+  "version": "1.0.0",
+  "description": "TCP file system server for BPP code editor",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
