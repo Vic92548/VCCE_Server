@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { OpenAI } from "openai";
 
 let apiKey = process.env.OPENAI_API_KEY || null;
@@ -29,7 +30,8 @@ export async function chat(messages, opts = {}) {
     model: opts.model || "gpt-4o-mini", // smaller + cheaper by default
     messages,
     temperature: opts.temperature ?? 0.2,
-    max_tokens: opts.max_tokens ?? 1024,
+    max_tokens: opts.max_tokens ?? 4000,
   });
   return resp.choices?.[0]?.message?.content ?? "";
 }
+

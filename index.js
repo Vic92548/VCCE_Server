@@ -12,6 +12,13 @@ let ig = null;
 try { ig = (await import('ignore')).default(); } catch { /* ignore */ }
 
 const PORT = 7071; // default port, can be overridden with env PORT
+// File extensions considered binary; we'll avoid reading their contents.
+const BINARY_EXTS = new Set([
+  '.png','.jpg','.jpeg','.gif','.bmp','.webp','.svg',
+  '.mp3','.wav','.ogg','.flac','.m4a','.aac',
+  '.mp4','.mkv','.mov','.avi','.webm','.wmv',
+  '.zip','.rar','.7z','.gz','.tar'
+]);
 
 // === AI integration state ===
 const sessions = new Map(); // key: projectPath, value: { filesText, lastUsed }
@@ -35,6 +42,7 @@ function encode(obj) {
 // Limits total bytes read to avoid huge payloads.
 async function readProjectFiles(root, limitBytes = 1_000_000) {
   // build ignore matcher once per call
+  console.log('[AI] reading project files', root);
   let matcher = null;
   const gitignorePath = path.join(root, '.gitignore');
   try {
@@ -56,7 +64,14 @@ async function readProjectFiles(root, limitBytes = 1_000_000) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const ent of entries) {
       const p = path.join(dir, ent.name);
+      console.log('[AI] processing', p);
       const rel = path.relative(root, p).replace(/\\/g,'/');
+      console.log('[AI] relative', rel);
+      // always ignore .git folder contents
+      if (rel.startsWith('.git/')) {
+        if (process.env.DEBUG_AI_FILES) console.log('[AI] skip .git', rel);
+        continue;
+      }
       if (matcher && matcher.ignores && matcher.ignores(rel)) {
         if (process.env.DEBUG_AI_FILES) console.log('[AI] skip', rel);
         continue;
@@ -65,10 +80,17 @@ async function readProjectFiles(root, limitBytes = 1_000_000) {
         await walk(p);
       } else {
         try {
+          const ext = path.extname(p).toLowerCase();
+          if (BINARY_EXTS.has(ext)) {
+            parts.push(`BINARY_FILE: ${rel}`);
+            if (process.env.DEBUG_AI_FILES) console.log('[AI] add binary placeholder', rel);
+            continue;
+          }
           const content = await fs.readFile(p, 'utf8');
           total += Buffer.byteLength(content, 'utf8');
           if (total > limitBytes) return; // stop if over budget
           parts.push(`FILE: ${rel}\n\n${content}`);
+          console.log('[AI] add', rel);
           if (process.env.DEBUG_AI_FILES) console.log('[AI] add', rel);
         } catch {}
       }
