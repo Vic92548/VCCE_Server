@@ -7,6 +7,9 @@ import { spawn } from 'node:child_process';
 import { chat as openaiChat, hasApiKey, setApiKey as setOpenAiKey } from './openai.js';
 
 import crypto from 'node:crypto';
+// Optional dependency: ignore (npm install ignore). Falls back to simple matcher if missing.
+let ig = null;
+try { ig = (await import('ignore')).default(); } catch { /* ignore */ }
 
 const PORT = 7071; // default port, can be overridden with env PORT
 
@@ -31,12 +34,33 @@ function encode(obj) {
 // Recursively read all files under a root directory, returning concatenated text (UTF-8).
 // Limits total bytes read to avoid huge payloads.
 async function readProjectFiles(root, limitBytes = 1_000_000) {
+  // build ignore matcher once per call
+  let matcher = null;
+  const gitignorePath = path.join(root, '.gitignore');
+  try {
+    const gitignoreContent = await fs.readFile(gitignorePath, 'utf8');
+    if (ig) {
+      matcher = ig.clone().add(gitignoreContent.split(/\r?\n/));
+      console.log('[AI] .gitignore loaded with', matcher._rules.length, 'rules');
+    } else {
+      // very simple fallback: just store patterns literals (no globs)
+      const lines = gitignoreContent.split(/\r?\n/).filter(l=>l && !l.startsWith('#'));
+      matcher = { ignores:p=>lines.some(r=>p.startsWith(r)) };
+      console.log('[AI] .gitignore loaded (simple) with', lines.length, 'patterns');
+    }
+  } catch {}
+
   let total = 0;
   const parts = [];
   async function walk(dir) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const ent of entries) {
       const p = path.join(dir, ent.name);
+      const rel = path.relative(root, p).replace(/\\/g,'/');
+      if (matcher && matcher.ignores && matcher.ignores(rel)) {
+        if (process.env.DEBUG_AI_FILES) console.log('[AI] skip', rel);
+        continue;
+      }
       if (ent.isDirectory()) {
         await walk(p);
       } else {
@@ -44,7 +68,8 @@ async function readProjectFiles(root, limitBytes = 1_000_000) {
           const content = await fs.readFile(p, 'utf8');
           total += Buffer.byteLength(content, 'utf8');
           if (total > limitBytes) return; // stop if over budget
-          parts.push(`FILE: ${path.relative(root, p)}\n\n${content}`);
+          parts.push(`FILE: ${rel}\n\n${content}`);
+          if (process.env.DEBUG_AI_FILES) console.log('[AI] add', rel);
         } catch {}
       }
       if (total > limitBytes) return;
