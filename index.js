@@ -4,8 +4,15 @@ import net from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { chat as openaiChat, hasApiKey, setApiKey as setOpenAiKey } from './openai.js';
+
+import crypto from 'node:crypto';
 
 const PORT = 7071; // default port, can be overridden with env PORT
+
+// === AI integration state ===
+const sessions = new Map(); // key: projectPath, value: { filesText, lastUsed }
+const pendingPatches = new Map(); // key: patchId, value: { projectPath, diff }
 
 /**
  * Encode a JS object as a length-prefixed JSON buffer.
@@ -19,6 +26,32 @@ function encode(obj) {
   buf.writeUInt32LE(json.length, 0);
   json.copy(buf, 4);
   return buf;
+}
+
+// Recursively read all files under a root directory, returning concatenated text (UTF-8).
+// Limits total bytes read to avoid huge payloads.
+async function readProjectFiles(root, limitBytes = 1_000_000) {
+  let total = 0;
+  const parts = [];
+  async function walk(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await walk(p);
+      } else {
+        try {
+          const content = await fs.readFile(p, 'utf8');
+          total += Buffer.byteLength(content, 'utf8');
+          if (total > limitBytes) return; // stop if over budget
+          parts.push(`FILE: ${path.relative(root, p)}\n\n${content}`);
+        } catch {}
+      }
+      if (total > limitBytes) return;
+    }
+  }
+  await walk(root);
+  return parts.join('\n\n');
 }
 
 /**
@@ -87,6 +120,55 @@ async function handleCommand(req, socket) {
         });
         // immediate ack
         return { ok: true, started: true };
+      }
+      case 'aiChat': {
+        const { projectPath, messages = [], newSession } = args;
+        if (!projectPath) return { ok: false, data: 'projectPath is required' };
+        let contextText;
+        if (newSession || !sessions.has(projectPath)) {
+          contextText = await readProjectFiles(projectPath);
+          sessions.set(projectPath, { filesText: contextText, lastUsed: Date.now() });
+        } else {
+          contextText = sessions.get(projectPath).filesText;
+        }
+        const fullMessages = [
+          { role: 'system', content: 'You are an AI assistant helping with the following project. The full codebase is provided below. Always ask for approval before applying code changes.\n\n' + contextText },
+          ...messages,
+        ];
+        const reply = await openaiChat(fullMessages);
+
+        // detect patch block
+        let pendingPatch = null;
+        const patchRegex = /```patch[\s\S]*?\n([\s\S]*?)```/;
+        const m = reply.match(patchRegex);
+        if (m) {
+          const diffText = m[1];
+          const patchId = crypto.randomUUID();
+          pendingPatches.set(patchId, { projectPath, diff: diffText });
+          pendingPatch = { id: patchId, diff: diffText };
+        }
+        return { ok: true, data: { reply, pendingPatch } };
+      }
+      case 'setApiKey': {
+        const { key } = args;
+        if (!key) return { ok: false, data: 'key is required' };
+        setOpenAiKey(key);
+        return { ok: true, data: { hasKey: true } };
+      }
+      case 'aiStatus': {
+        return { ok: true, data: { hasKey: hasApiKey() } };
+      }
+      case 'aiApprove': {
+        const { patchId, apply } = args;
+        const entry = pendingPatches.get(patchId);
+        if (!entry) return { ok: false, data: 'Unknown patchId' };
+        if (apply) {
+          // TODO: implement safe diff apply
+          return { ok: false, data: 'Auto-apply not implemented yet' };
+        } else {
+          pendingPatches.delete(patchId);
+          return { ok: true, data: 'Patch discarded' };
+        }
       }
       default:
         return { ok: false, data: `Unknown command ${cmd}` };
