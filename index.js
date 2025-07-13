@@ -172,14 +172,14 @@ async function handleCommand(req, socket) {
         const { projectPath, messages = [], newSession } = args;
         if (!projectPath) return { ok: false, data: 'projectPath is required' };
         let contextText;
-        if (newSession || !sessions.has(projectPath)) {
-          contextText = await readProjectFiles(projectPath);
-          sessions.set(projectPath, { filesText: contextText, lastUsed: Date.now() });
-        } else {
-          contextText = sessions.get(projectPath).filesText;
-        }
+        
+        contextText = await readProjectFiles(projectPath);
+        sessions.set(projectPath, { filesText: contextText, lastUsed: Date.now() });
+
+        const prompt = await fs.readFile('prompt.txt', 'utf8');
+
         const fullMessages = [
-          { role: 'system', content: 'You are an AI assistant helping with the following project. The full codebase is provided below. Always ask for approval before applying code changes.\n\n' + contextText },
+          { role: 'system', content: prompt + '\n\n' + contextText },
           ...messages,
         ];
         const reply = await openaiChat(fullMessages);
